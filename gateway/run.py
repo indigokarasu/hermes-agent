@@ -4590,6 +4590,37 @@ class GatewayRunner:
                     except Exception as _e:
                         logger.debug("SessionStore prune failed: %s", _e)
                     self._last_session_store_prune_ts = time.time()
+
+                # --- session archive (daily) ---
+                _last_archive_ts = getattr(self, "_last_session_archive_ts", 0.0)
+                _archive_interval = 86400.0  # once per day
+                if time.time() - _last_archive_ts > _archive_interval:
+                    try:
+                        _archive_days = int(
+                            getattr(self.config, "session_archive_days", 0) or 0
+                        )
+                        if _archive_days > 0:
+                            _archived = self.session_store.archive_old_topic_sessions(
+                                _archive_days, self.config.sessions_dir
+                            )
+                    except Exception as _e:
+                        logger.debug("Session archive failed: %s", _e)
+                    self._last_session_archive_ts = time.time()
+
+                # --- orphan session cleanup (daily) ---
+                _last_orphan_ts = getattr(self, "_last_session_orphan_cleanup_ts", 0.0)
+                if time.time() - _last_orphan_ts > _archive_interval:
+                    try:
+                        _orphan_days = int(
+                            getattr(self.config, "session_orphan_days", 0) or 0
+                        )
+                        if _orphan_days > 0:
+                            _cleaned = self.session_store.cleanup_orphan_sessions(
+                                self.config.sessions_dir, self._session_db, _orphan_days
+                            )
+                    except Exception as _e:
+                        logger.debug("Orphan session cleanup failed: %s", _e)
+                    self._last_session_orphan_cleanup_ts = time.time()
             except Exception as e:
                 logger.debug("Session expiry watcher error: %s", e)
             # Sleep in small increments so we can stop quickly

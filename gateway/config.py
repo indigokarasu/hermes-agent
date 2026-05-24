@@ -495,6 +495,19 @@ class GatewayConfig:
     # fresh session exactly as if the reset policy had fired.  0 = disabled.
     session_store_max_age_days: int = 90
 
+    # Session archive: compress session transcript files for topics that have
+    # been inactive for this many days.  Archived sessions are moved to
+    # the archive/ subdirectory as gzipped JSON.  The session entry and
+    # SQLite record are preserved -- archiving only affects on-disk storage.
+    # 0 = disabled.
+    session_archive_days: int = 30
+
+    # Session orphan cleanup: remove session transcript files that have no
+    # corresponding record in the session database.  Stale files can accumulate
+    # from crashes, manual session-store edits, or incomplete wipes.  Runs on
+    # gateway startup.  0 = disabled.
+    session_orphan_days: int = 7
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -588,6 +601,8 @@ class GatewayConfig:
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
+            "session_archive_days": self.session_archive_days,
+            "session_orphan_days": self.session_orphan_days,
         }
     
     @classmethod
@@ -641,6 +656,18 @@ class GatewayConfig:
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 
+        try:
+            session_archive_days = int(data.get("session_archive_days", 30))
+            session_archive_days = max(session_archive_days, 0)
+        except (TypeError, ValueError):
+            session_archive_days = 30
+
+        try:
+            session_orphan_days = int(data.get("session_orphan_days", 7))
+            session_orphan_days = max(session_orphan_days, 0)
+        except (TypeError, ValueError):
+            session_orphan_days = 7
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -656,6 +683,8 @@ class GatewayConfig:
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
+            session_archive_days=session_archive_days,
+            session_orphan_days=session_orphan_days,
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:

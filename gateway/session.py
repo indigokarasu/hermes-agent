@@ -1091,6 +1091,107 @@ class SessionStore:
             )
         return len(removed_keys)
 
+    def archive_old_topic_sessions(self, archive_days: int, sessions_dir) -> int:
+        """Compress and move inactive topic session files to cold storage.
+
+        Forum-topic session files that have been inactive longer than
+        *archive_days* are gzipped and moved to ``sessions_dir/archive/``.
+        The session entry and SQLite record are preserved.
+        """
+        import gzip
+        import shutil
+        from pathlib import Path
+
+        if archive_days <= 0:
+            return 0
+
+        cutoff = _now() - timedelta(days=archive_days)
+        archive_dir = Path(sessions_dir) / "archive"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        archived = 0
+
+        for session_file in Path(sessions_dir).glob("*.json"):
+            if session_file.name == "sessions.json":
+                continue
+            try:
+                stat = session_file.stat()
+                file_mtime = datetime.fromtimestamp(stat.st_mtime)
+                if file_mtime > cutoff:
+                    continue
+            except (OSError, ValueError):
+                continue
+            try:
+                with open(session_file, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                source = data.get("_source", {})
+                if source.get("chat_type") != "forum":
+                    continue
+            except (json.JSONDecodeError, OSError):
+                continue
+            try:
+                archive_path = archive_dir / (session_file.stem + ".json.gz")
+                with open(session_file, "rb") as src, gzip.open(archive_path, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                session_file.unlink()
+                archived += 1
+            except OSError as e:
+                logger.warning("Failed to archive %s: %s", session_file.name, e)
+
+        if archived:
+            logger.info("Archived %d topic session files (%d+ days inactive)", archived, archive_days)
+        return archived
+
+    def cleanup_orphan_sessions(self, sessions_dir, db, orphan_days: int = 7) -> int:
+        """Remove session transcript files with no matching DB record.
+
+        Stale files accumulate from crashes or incomplete wipes.  Only files
+        older than *orphan_days* are removed to avoid deleting in-flight sessions.
+        """
+        from pathlib import Path
+
+        if orphan_days <= 0:
+            return 0
+
+        if db is None:
+            return 0
+
+        cutoff = _now() - timedelta(days=orphan_days)
+        removed = 0
+        known_ids: set = set()
+
+        if db is not None:
+            try:
+                rows = db._conn.execute("SELECT id FROM sessions").fetchall()
+                known_ids = {row[0] for row in rows}
+            except Exception as e:
+                logger.debug("Could not query session DB for orphan cleanup: %s", e)
+                return 0
+
+        for pattern in ("*.json", "*.json.gz"):
+            for f in Path(sessions_dir).glob(pattern):
+                if f.name == "sessions.json":
+                    continue
+                try:
+                    stat = f.stat()
+                    mtime = datetime.fromtimestamp(stat.st_mtime)
+                    if mtime > cutoff:
+                        continue
+                except (OSError, ValueError):
+                    continue
+                sid = f.stem
+                if sid.endswith(".json"):
+                    sid = sid[:-5]
+                if sid not in known_ids:
+                    try:
+                        f.unlink()
+                        removed += 1
+                    except OSError as e:
+                        logger.warning("Failed to remove orphan %s: %s", f.name, e)
+
+        if removed:
+            logger.info("Cleaned up %d orphan session files", removed)
+        return removed
+
     def suspend_recently_active(self, max_age_seconds: int = 120) -> int:
         """Mark recently-active sessions as resumable after an unexpected exit.
 
