@@ -5214,6 +5214,23 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         event = self._apply_telegram_group_observe_attribution(event)
+
+        # --- /resume button UI ---
+        # When /resume is called with no arguments on Telegram, show an inline
+        # keyboard with the last 12 non-cron named sessions instead of a plain
+        # text list.  When arguments are given (name or number), fall through
+        # to the normal gateway handler.
+        if event.text and event.text.lower().startswith("/resume"):
+            args = event.text[len("/resume"):].strip()
+            if not args:
+                logger.info("[Telegram] /resume intercepted — sending button UI")
+                try:
+                    await self._send_resume_button_ui(msg, event)
+                except Exception as _btn_exc:
+                    logger.error("[Telegram] resume button UI failed: %s", _btn_exc, exc_info=True)
+                    await self.handle_message(event)
+                return
+
         await self.handle_message(event)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
