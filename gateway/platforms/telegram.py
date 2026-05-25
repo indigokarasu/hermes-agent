@@ -472,6 +472,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # Reference to the gateway's SessionDB, set after adapter creation.
+        # Used to prune stale topic bindings when Telegram reports "Thread not found".
+        self._session_db: Optional[Any] = None
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -1802,12 +1805,34 @@ class TelegramAdapter(BasePlatformAdapter):
                                     )
                                     continue
                                 # Second failure: the thread is genuinely gone.
-                                # Retry without ``message_thread_id`` so the
-                                # message still reaches the chat.
+                                # Retry without ``message_thread_id`` so the message
+                                # still reaches the chat.
                                 logger.warning(
                                     "[%s] Thread %s not found, retrying without message_thread_id",
                                     self.name, effective_thread_id,
                                 )
+                                # Prune the stale topic binding so future messages
+                                # in new topics are not redirected to this deleted topic.
+                                # Fixes #31501.
+                                if self._session_db is not None:
+                                    try:
+                                        pruned = self._session_db.delete_telegram_topic_binding(
+                                            chat_id=str(chat_id),
+                                            thread_id=str(effective_thread_id),
+                                        )
+                                        if pruned:
+                                            logger.info(
+                                                "[%s] Pruned stale Telegram topic binding: "
+                                                "chat=%s thread=%s",
+                                                self.name, chat_id, effective_thread_id,
+                                            )
+                                    except Exception:
+                                        logger.debug(
+                                            "[%s] Failed to prune stale topic binding "
+                                            "(non-fatal): chat=%s thread=%s",
+                                            self.name, chat_id, effective_thread_id,
+                                            exc_info=True,
+                                        )
                                 used_thread_fallback = True
                                 effective_thread_id = None
                                 thread_kwargs = {"message_thread_id": None}

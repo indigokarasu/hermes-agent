@@ -6040,6 +6040,9 @@ class GatewayRunner:
                 logger.warning("Telegram: python-telegram-bot not installed")
                 return None
             adapter = TelegramAdapter(config)
+            # Provide the adapter with a reference to the session DB so it can
+            # prune stale topic bindings when Telegram reports "Thread not found".
+            adapter._session_db = getattr(self, "_session_db", None)
             # Apply Telegram notification mode from config.  Controls whether
             # intermediate messages (tool progress, streaming, status) trigger
             # push notifications.  Supports ENV override for quick testing.

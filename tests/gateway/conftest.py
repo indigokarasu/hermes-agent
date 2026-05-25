@@ -64,7 +64,7 @@ def _ensure_telegram_mock() -> None:
     # in production code don't blow up with TypeError.
     mod.error.NetworkError = type("NetworkError", (OSError,), {})
     mod.error.TimedOut = type("TimedOut", (OSError,), {})
-    mod.error.BadRequest = type("BadRequest", (Exception,), {})
+    mod.error.BadRequest = type("BadRequest", (mod.error.NetworkError,), {})
     mod.error.Forbidden = type("Forbidden", (Exception,), {})
     mod.error.InvalidToken = type("InvalidToken", (Exception,), {})
     mod.error.RetryAfter = type("RetryAfter", (Exception,), {"retry_after": 1})

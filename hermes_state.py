@@ -2981,6 +2981,32 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def delete_telegram_topic_binding(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+    ) -> bool:
+        """Delete a Telegram DM topic binding from local state.
+
+        Returns True if a row was deleted, False if no matching binding existed
+        or the bindings table hasn't been created yet.
+
+        Called automatically when the Telegram adapter detects that a topic has
+        been deleted externally (Bot API returns "Thread not found").
+        """
+        with self._lock:
+            try:
+                cur = self._conn.execute(
+                    "DELETE FROM telegram_dm_topic_bindings "
+                    "WHERE chat_id = ? AND thread_id = ?",
+                    (str(chat_id), str(thread_id)),
+                )
+                return cur.rowcount > 0
+            except sqlite3.OperationalError:
+                # Table doesn't exist yet — nothing to delete.
+                return False
+
     def is_telegram_session_linked_to_topic(self, *, session_id: str) -> bool:
         """Return True if a Hermes session is already bound to any Telegram DM topic.
 

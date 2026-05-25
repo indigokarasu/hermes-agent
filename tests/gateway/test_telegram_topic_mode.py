@@ -1326,3 +1326,195 @@ def test_session_split_restores_source_thread_id_from_binding(tmp_path):
     meta = GatewayRunner._thread_metadata_for_source(runner, source)
     assert meta is not None
     assert meta["thread_id"] == "17585"
+
+
+# ---------------------------------------------------------------------------
+# Tests for delete_telegram_topic_binding (issue #31501)
+# ---------------------------------------------------------------------------
+
+
+def test_delete_telegram_topic_binding_returns_true_when_exists(tmp_path):
+    """Deleting an existing binding returns True and removes the row."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session(session_id="sess-del", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:17585",
+        session_id="sess-del",
+    )
+
+    assert db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585") is not None
+    assert db.delete_telegram_topic_binding(chat_id="208214988", thread_id="17585") is True
+    assert db.get_telegram_topic_binding(chat_id="208214988", thread_id="17585") is None
+
+
+def test_delete_telegram_topic_binding_returns_false_when_no_table(tmp_path):
+    """Deleting from a non-existent table returns False without error."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    # Don't create the topic tables at all.
+    assert db.delete_telegram_topic_binding(chat_id="208214988", thread_id="9999") is False
+
+
+def test_delete_telegram_topic_binding_returns_false_when_no_matching_row(tmp_path):
+    """Deleting a non-existent binding returns False."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    assert db.delete_telegram_topic_binding(chat_id="208214988", thread_id="9999") is False
+
+
+def test_delete_telegram_topic_binding_only_deletes_target_row(tmp_path):
+    """Deleting one binding does not affect other bindings for the same chat."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session(session_id="sess-X", source="telegram", user_id="208214988")
+    db.create_session(session_id="sess-Y", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="111",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:111",
+        session_id="sess-X",
+    )
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="222",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:222",
+        session_id="sess-Y",
+    )
+
+    assert db.delete_telegram_topic_binding(chat_id="208214988", thread_id="111") is True
+
+    # The other binding must still exist.
+    binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="222")
+    assert binding is not None
+    assert binding["session_id"] == "sess-Y"
+
+
+def test_recovery_skips_deleted_topic_after_prune(tmp_path):
+    """After pruning a stale binding, _recover no longer returns it.
+
+    Simulates the full #31501 flow: a topic is bound externally, then
+    deleted in Telegram. The next send to that topic triggers the
+    'Thread not found' fallback which prunes the binding. After pruning,
+    _recover_telegram_topic_thread_id() must NOT redirect to the stale topic.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session(session_id="sess-stale", source="telegram", user_id="208214988")
+    db.create_session(session_id="sess-other", source="telegram", user_id="208214988")
+    # Stale topic 15287 (will be "deleted" by user in Telegram)
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="15287",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:15287",
+        session_id="sess-stale",
+    )
+    # Another existing topic 15418
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="15418",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:15418",
+        session_id="sess-other",
+    )
+
+    runner = _make_runner(session_db=db)
+
+    # Before pruning: recovery from lobby should return the most recent topic (15418),
+    # NOT the stale one (15287).
+    pre_prune = runner._recover_telegram_topic_thread_id(_make_source(thread_id=None))
+    assert pre_prune == "15418"
+
+    # Simulate the Telegram adapter pruning the stale binding after "Thread not found"
+    pruned = db.delete_telegram_topic_binding(chat_id="208214988", thread_id="15287")
+    assert pruned is True
+
+    # After pruning: recovery from lobby must NOT return the deleted topic.
+    post_prune = runner._recover_telegram_topic_thread_id(_make_source(thread_id=None))
+    assert post_prune != "15287"
+    # 15418 is still the most recent bound topic, so recovery should return it.
+    assert post_prune == "15418"
+
+    # A brand-new topic (99999) that is NOT in bindings should NOT be redirected
+    # to the stale deleted topic (it's gone). It should either return 15418
+    # (most recent) or None depending on recovery logic, but never 15287.
+    new_topic_recovery = runner._recover_telegram_topic_thread_id(
+        _make_source(thread_id="99999")
+    )
+    assert new_topic_recovery != "15287"
+
+
+@pytest.mark.asyncio
+async def test_send_thread_not_found_prunes_stale_binding(tmp_path):
+    """When Telegram returns 'Thread not found' twice, the adapter prunes the binding.
+
+    This tests the end-to-end integration: the adapter's send() method detects
+    the second 'Thread not found' error and calls delete_telegram_topic_binding.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="5595856929", user_id="5595856929")
+    db.create_session(session_id="sess-old", source="telegram", user_id="5595856929")
+    db.bind_telegram_topic(
+        chat_id="5595856929",
+        thread_id="15344",
+        user_id="5595856929",
+        session_key="agent:main:telegram:dm:5595856929:15344",
+        session_id="sess-old",
+    )
+
+    from gateway.platforms.telegram import TelegramAdapter
+    from gateway.config import Platform, PlatformConfig
+    adapter = object.__new__(TelegramAdapter)
+    adapter._bot = MagicMock()
+    adapter._session_db = db
+    # Skip __init__ — set minimum attributes needed by send().
+    adapter.config = PlatformConfig(enabled=True, token="test")
+    adapter.platform = Platform.TELEGRAM
+    adapter._running = False
+    adapter._notifications_mode = "all"
+    adapter._reply_to_mode = "first"
+    adapter._disable_link_previews = False
+    adapter._status_message_ids = {}
+    adapter._approval_state = {}
+    adapter._slash_confirm_state = {}
+    adapter._clarify_state = {}
+    adapter._model_picker_state = {}
+
+    # Make send_message raise BadRequest with "thread not found" on first two calls,
+    # then succeed on the third (fallback without message_thread_id).
+    from telegram.error import BadRequest
+
+    error = BadRequest("Message thread not found")
+
+    call_count = 0
+
+    async def fake_send_message(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        msg = MagicMock()
+        msg.message_id = 9999
+        if call_count <= 2 and kwargs.get("message_thread_id") is not None:
+            raise error
+        return msg  # Third call succeeds
+
+    adapter._bot.send_message = AsyncMock(side_effect=fake_send_message)
+    adapter.format_message = MagicMock(return_value="test message content")
+    adapter.truncate_message = MagicMock(return_value=["test message content"])
+    adapter._thread_kwargs_for_send = MagicMock(return_value={"message_thread_id": 15344})
+    adapter._link_preview_kwargs = MagicMock(return_value={})
+    adapter._notification_kwargs = MagicMock(return_value={})
+    adapter.send_typing = AsyncMock()
+
+    result = await adapter.send(
+        chat_id="5595856929",
+        content="test message",
+    )
+
+    assert result.success is True
+    # The stale binding should have been pruned.
+    assert db.get_telegram_topic_binding(chat_id="5595856929", thread_id="15344") is None
