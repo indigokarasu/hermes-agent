@@ -5097,19 +5097,21 @@ class TelegramAdapter(BasePlatformAdapter):
 
             lines = []
             buttons = []
-            for s in sessions:
+            for idx, s in enumerate(sessions, start=1):
                 title = s["title"]
                 preview = s.get("preview", "")
 
                 # Use HTML parse mode — escape entities for safety
                 safe_title = _html.escape(title)
-                msg_line = f"<b>{safe_title}</b>"
+                msg_line = f"<b>{idx}. {safe_title}</b>"
                 if preview:
                     safe_preview = _html.escape(preview)
                     msg_line += f"\n<i>{safe_preview}</i>"
                 lines.append(msg_line)
 
-                btn_label = title[:22] + "..." if len(title) > 25 else title
+                # Button label: number + title, truncated to fit mobile (~25 chars)
+                short_title = title[:18] + "..." if len(title) > 21 else title
+                btn_label = f"{idx}. {short_title}"
                 buttons.append([InlineKeyboardButton(btn_label, callback_data=f"rs:{s['id']}")])
 
             keyboard = InlineKeyboardMarkup(buttons)
@@ -5120,7 +5122,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 text=text,
                 parse_mode=ParseMode.HTML,
                 reply_markup=keyboard,
-                **self._link_preview_kwargs(),
             )
             if hasattr(msg, "message_thread_id") and msg.message_thread_id:
                 kwargs["message_thread_id"] = msg.message_thread_id
