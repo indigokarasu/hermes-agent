@@ -1084,24 +1084,37 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             grace = _compute_grace_seconds(schedule)
             if kind in {"cron", "interval"} and (now - next_run_dt).total_seconds() > grace:
                 # Job is past its catch-up grace window — this is a stale missed run.
-                # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
-                new_next = compute_next_run(schedule, now.isoformat())
-                if new_next:
-                    logger.info(
-                        "Job '%s' missed its scheduled time (%s, grace=%ds). "
-                        "Fast-forwarding to next run: %s",
-                        job.get("name", job["id"]),
-                        next_run,
-                        grace,
-                        new_next,
-                    )
-                    # Update the job in storage
-                    for rj in raw_jobs:
-                        if rj["id"] == job["id"]:
-                            rj["next_run_at"] = new_next
-                            needs_save = True
-                            break
-                    continue  # Skip this run
+                    # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
+                    # When fast-forwarding, advance past `now` to prevent an infinite
+                    # loop if croniter rounds to a time that's already passed.
+                    _now_str = now.isoformat()
+                    new_next = compute_next_run(schedule, _now_str)
+                    if new_next:
+                        _next_dt = _ensure_aware(datetime.fromisoformat(new_next))
+                        _safety = 0
+                        while _next_dt <= now and _safety < 1440:
+                            _later_iso = _next_dt.isoformat()
+                            _nxt = compute_next_run(schedule, _later_iso)
+                            if not _nxt:
+                                break
+                            _next_dt = _ensure_aware(datetime.fromisoformat(_nxt))
+                            _safety += 1
+                        if _next_dt > now:
+                            new_next = _next_dt.isoformat()
+                        logger.info(
+                            "Job '%s' missed its scheduled time (%s, grace=%ds). "
+                            "Fast-forwarding to next run: %s",
+                            job.get("name", job["id"]),
+                            next_run,
+                            grace,
+                            new_next,
+                        )
+                        for rj in raw_jobs:
+                            if rj["id"] == job["id"]:
+                                rj["next_run_at"] = new_next
+                                needs_save = True
+                                break
+                        continue  # Skip this run
 
             due.append(job)
 
