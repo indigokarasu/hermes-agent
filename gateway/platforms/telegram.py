@@ -5331,30 +5331,27 @@ class TelegramAdapter(BasePlatformAdapter):
 
             lines = []
             buttons = []
-            for s in sessions:
+            for idx, s in enumerate(sessions, start=1):
                 title = s["title"]
                 preview = s.get("preview", "")
 
-                # Use HTML parse mode — escape entities for safety
-                safe_title = _html.escape(title)
-                msg_line = f"<b>{safe_title}</b>"
+                msg_line = f"{idx}. {title}"
                 if preview:
-                    safe_preview = _html.escape(preview)
-                    msg_line += f"\n<i>{safe_preview}</i>"
+                    msg_line += f"\n   {preview}"
                 lines.append(msg_line)
 
-                btn_label = title[:22] + "..." if len(title) > 25 else title
+                short_title = title[:37] + "..." if len(title) > 40 else title
+                btn_label = f"{idx}. {short_title}"
                 buttons.append([InlineKeyboardButton(btn_label, callback_data=f"rs:{s['id']}")])
 
             keyboard = InlineKeyboardMarkup(buttons)
-            text = "Tap a recent session to resume\n\n" + "\n\n".join(lines)
+            text = "Tap a recent session to resume:\n\n" + "\n\n".join(lines)
 
             kwargs = dict(
                 chat_id=msg.chat_id,
                 text=text,
-                parse_mode=ParseMode.HTML,
                 reply_markup=keyboard,
-                **self._link_preview_kwargs(),
+                disable_web_page_preview=True,
             )
             if hasattr(msg, "message_thread_id") and msg.message_thread_id:
                 kwargs["message_thread_id"] = msg.message_thread_id
