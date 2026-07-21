@@ -4,7 +4,7 @@
 <img src="./assets/readme/hero.svg" width="100%" alt="The agent that grows with you">
 </p>
 
-hermes-agent — The agent that grows with you
+hermes-agent - The agent that grows with you
 
 
 > One clear job, done well.
@@ -12,3 +12,6 @@ hermes-agent — The agent that grows with you
 ---
 
 *hermes-agent is part of the [OCAS Agent Suite](https://github.com/indigokarasu).*
+---
+## 📄 License
+MIT License — see `LICENSE` for details.
